@@ -343,6 +343,37 @@ async def test_uploadfile_rolling(max_size: int) -> None:
     await file.close()
 
 
+@pytest.mark.anyio
+async def test_uploadfile_future_rollover() -> None:
+    """Test that UploadFile checks for future rollover to avoid blocking event loop.
+
+    This test verifies the fix for CVE-2025-54121 where writing data that would
+    cause a SpooledTemporaryFile to roll over to disk would block the main thread.
+    """
+    # Create a SpooledTemporaryFile with max_size=10
+    stream: BinaryIO = SpooledTemporaryFile(max_size=10)  # type: ignore[assignment]
+    file = UploadFile(filename="file", file=stream, size=0)
+
+    # Write 5 bytes - should stay in memory
+    await file.write(b"hello")
+    assert file.size == 5
+    assert file._in_memory is True
+
+    # Write 6 more bytes - this should cause rollover since 5+6=11 > 10
+    # The fix ensures this write uses run_in_threadpool to avoid blocking
+    await file.write(b"world!")
+    assert file.size == 11
+
+    # Verify the data was written correctly
+    await file.seek(0)
+    assert await file.read() == b"helloworld!"
+
+    # After rollover, the file should no longer be in memory
+    assert file._in_memory is False
+
+    await file.close()
+
+
 def test_formdata() -> None:
     stream = io.BytesIO(b"data")
     upload = UploadFile(filename="file", file=stream, size=4)
